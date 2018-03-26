@@ -111,7 +111,7 @@ UIImage *firstImage = nil;
     return allDevices;
 }
 
-- (void) setFrameRateForDevice: (AVCaptureDevice *)device {
+- (void) setHighestFrameRateForDevice: (AVCaptureDevice *)device {
     // Get supported frame rate range for the device
     NSLog(@"Supported frame rate: %@", device.activeFormat.videoSupportedFrameRateRanges);
     
@@ -140,7 +140,7 @@ UIImage *firstImage = nil;
 }
 
 /* take common video:AVCaptureSessionPreset640x480 */
-- (IBAction)onTakeVideo:(UIButton *)sender {
+- (IBAction)onARVideo:(UIButton *)sender {
     firstFrame = true;
     [self configurePreviewOutput];
     
@@ -157,7 +157,7 @@ UIImage *firstImage = nil;
     });
 }
 
-- (IBAction)onTakeMovie:(UIButton *)sender {
+- (IBAction)onTakeVideo:(UIButton *)sender {
     // preview output has to be run from UI thread
     [self configurePreviewOutput];
     dispatch_async( self.avSessionQueue, ^{
@@ -177,6 +177,17 @@ UIImage *firstImage = nil;
     });
 }
 
+- (IBAction)onTakeSlowMoVideo:(UIButton *)sender {
+    // preview output has to be run from UI thread
+    [self configurePreviewOutput];
+    dispatch_async( self.avSessionQueue, ^{
+        [self configSloMoSession];
+        [self configMovieOutput];
+        [self startMovieRecording];
+    });
+}
+
+
 - (IBAction)captureNow:(UIButton *)sender {
     NSLog(@"Press capture now. Stop recording");
     dispatch_async( self.avSessionQueue, ^{
@@ -191,10 +202,18 @@ UIImage *firstImage = nil;
 //      [self configureImageOutput:self.avSession];
 - (void) configSession {
     // default preset: 1280x720.
-    [self configSession: AVCaptureSessionPreset1280x720];
+    [self configSession:AVCaptureSessionPreset3840x2160 enableSloMo: false];
 }
 
 - (void) configSession : (AVCaptureSessionPreset) sessionPreset {
+    [self configSession:sessionPreset enableSloMo: false];
+}
+
+- (void) configSloMoSession {
+    [self configSession:AVCaptureSessionPreset1280x720 enableSloMo: true];
+}
+
+- (void) configSession : (AVCaptureSessionPreset) sessionPreset enableSloMo: (BOOL) sloMoIsEnabled {
     if (self.setupResult != AVCamManualSetupResultSuccess) {
         return;
     }
@@ -224,7 +243,9 @@ UIImage *firstImage = nil;
     // activeMinFrameDuration/Max will be set back to default while calling those two functions.
     // Also after this is done, session preset will automatically be set to AVCaptureSessionPresetInputPriority
     // and no longer automatically config capture format.
-    //[self setFrameRateForDevice:currentDevice];
+    if (sloMoIsEnabled) {
+        [self setHighestFrameRateForDevice:self.currentDevice];
+    }
     [self.avSession commitConfiguration];
 }
 
@@ -268,6 +289,40 @@ UIImage *firstImage = nil;
     self.videoDataOutput = [[AVCaptureVideoDataOutput alloc] init];
     NSDictionary *newSettings =  @{ (NSString *)kCVPixelBufferPixelFormatTypeKey : @(kCVPixelFormatType_32BGRA) };
     self.videoDataOutput.videoSettings = newSettings;
+    if ([self.avSession canAddOutput:self.videoDataOutput]) {
+        [self.avSession addOutput:self.videoDataOutput];
+    }
+    else {
+        self.setupResult = AVCamManualSetupResultSessionConfigurationFailed;
+        NSLog(@"Error: can't add video output");
+    }
+}
+
+
+- (void) startMovieRecording {
+    if (!self.sessionIsRunning && self.setupResult == AVCamManualSetupResultSuccess) {
+        [self startSession];
+    }
+    [self.movieFileOutput startRecordingToOutputFileURL:self.outputURL recordingDelegate:self];
+    NSLog(@"Start recording to output: %@", self.outputURL);
+    self.videoIsRecording = true;
+}
+
+- (void) startVideo {
+    if (!self.sessionIsRunning && self.setupResult == AVCamManualSetupResultSuccess) {
+        dispatch_queue_t videoDataOutputQueue = dispatch_queue_create("VideoDataOutputQueue", DISPATCH_QUEUE_SERIAL);
+        [self.videoDataOutput setSampleBufferDelegate:self queue:videoDataOutputQueue];
+        [self startSession];
+        self.videoIsRecording = true;
+    }
+}
+
+- (void) stopVideo {
+    if (!self.videoIsRecording) {
+        return;
+    }
+    [self.movieFileOutput stopRecording];
+    self.videoIsRecording = false;
 }
 
 - (void) startSession {
@@ -282,6 +337,7 @@ UIImage *firstImage = nil;
             [self addObservers];
             [self.avSession startRunning];
             self.sessionIsRunning = self.avSession.isRunning;
+            NSLog(@"session start running");
             break;
         }
         case AVCamManualSetupResultSessionConfigurationFailed:
@@ -291,14 +347,6 @@ UIImage *firstImage = nil;
             });
         }
     }
-}
-
-- (void) startMovieRecording {
-    if (!self.sessionIsRunning && self.setupResult == AVCamManualSetupResultSuccess) {
-        [self startSession];
-    }
-    [self.movieFileOutput startRecordingToOutputFileURL:self.outputURL recordingDelegate:self];
-    NSLog(@"Start recording to output: %@", self.outputURL);
 }
 
 - (void) stopSession {
@@ -315,14 +363,6 @@ UIImage *firstImage = nil;
     }
     [self removeObservers];
     self.sessionIsRunning = false;
-}
-
-- (void) stopVideo {
-    if (!self.videoIsRecording) {
-        return;
-    }
-    [self.movieFileOutput stopRecording];
-    self.videoIsRecording = false;
 }
 
 - (void) getMetaDataFromAVAsset: (NSURL *) mediaFile {
